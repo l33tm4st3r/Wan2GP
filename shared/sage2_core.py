@@ -98,9 +98,17 @@ def get_cuda_version():
         print("Failed to get CUDA version:", e)
     return None, None
 
+_IS_HIP = getattr(torch.version, "hip", None) is not None
+
 def get_cuda_arch_versions():
     cuda_archs = []
     for i in range(torch.cuda.device_count()):
+        if _IS_HIP:
+            props = torch.cuda.get_device_properties(i)
+            arch = getattr(props, "gcnArchName", "").split(":", 1)[0]
+            if arch:
+                cuda_archs.append(arch)
+                continue
         major, minor = torch.cuda.get_device_capability(i)
         cuda_archs.append(f"sm{major}{minor}")
     return cuda_archs
@@ -297,6 +305,17 @@ def sageattn(
             raise ValueError(f"Masked SageAttention is unsupported on CUDA architecture {arch}: {support_reason}")
     if attn_mask is not None:
         return sageattn_qk_int8_pv_fp16_triton(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, attn_mask=attn_mask)
+    if arch.startswith("gfx12"):
+        from sageattention.core import sageattn_qk_int8_pv_gfx12_native
+        q, k, v = qkv_list
+        qkv_list.clear()
+        return sageattn_qk_int8_pv_gfx12_native(
+            q, k, v,
+            tensor_layout=tensor_layout,
+            is_causal=is_causal,
+            sm_scale=sm_scale,
+            return_lse=return_lse,
+        )
     if arch == "sm80":
         return sageattn_qk_int8_pv_fp16_cuda(qkv_list, tensor_layout=tensor_layout, is_causal=is_causal, sm_scale=sm_scale, return_lse=return_lse, pv_accum_dtype="fp32")
     elif arch == "sm86":
